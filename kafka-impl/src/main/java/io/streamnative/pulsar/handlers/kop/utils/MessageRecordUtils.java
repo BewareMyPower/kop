@@ -28,6 +28,8 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.stream.IntStream;
 import java.util.stream.StreamSupport;
+
+import io.netty.buffer.Unpooled;
 import lombok.experimental.UtilityClass;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.common.header.Header;
@@ -151,7 +153,39 @@ public final class MessageRecordUtils {
     protected static final int MAX_MESSAGE_BATCH_SIZE_BYTES = 128 * 1024;
 
     // If records stored in a batched way, turn MemoryRecords into a pulsar batched message.
-    public static ByteBuf recordsToByteBuf(MemoryRecords records, int size) {
+    public static ByteBuf recordsToByteBuf(MemoryRecords records, int numRecords) {
+        return Unpooled.wrappedBuffer(records.buffer());
+    }
+
+    public static MemoryRecords entriesToRecords(List<org.apache.bookkeeper.mledger.Entry> entries, byte magic) {
+        int size = 0;
+        for (org.apache.bookkeeper.mledger.Entry entry : entries) {
+            size = size + entry.getLength();
+        }
+        final ByteBuffer buffer = ByteBuffer.allocate(size);
+        final MemoryRecordsBuilder builder = new MemoryRecordsBuilder(buffer, magic,
+                org.apache.kafka.common.record.CompressionType.NONE,
+                TimestampType.CREATE_TIME,
+                MessageIdUtils.getOffset(entries.get(0).getLedgerId(), 0),
+                RecordBatch.NO_TIMESTAMP,
+                RecordBatch.NO_PRODUCER_ID,
+                RecordBatch.NO_PRODUCER_EPOCH,
+                RecordBatch.NO_SEQUENCE,
+                false, false,
+                RecordBatch.NO_PARTITION_LEADER_EPOCH,
+                MAX_RECORDS_BUFFER_SIZE);
+        entries.forEach(entry -> {
+            final MemoryRecords records = MemoryRecords.readableRecords(entry.getDataBuffer().nioBuffer());
+            long offset = MessageIdUtils.getOffset(entry.getLedgerId(), entry.getEntryId(), 0);
+            for (Record record : records.records()) {
+                builder.appendWithOffset(offset, record);
+                offset++;
+            }
+        });
+        return builder.build();
+    }
+
+    public static ByteBuf recordsToByteBufOld(MemoryRecords records, int size) {
         long currentBatchSizeBytes = 0;
         int numMessagesInBatch = 0;
 
@@ -160,7 +194,7 @@ public final class MessageRecordUtils {
         PulsarApi.CompressionType compressionType = PulsarApi.CompressionType.NONE;
 
         ByteBuf batchedMessageMetadataAndPayload = PulsarByteBufAllocator.DEFAULT
-            .buffer(Math.min(INITIAL_BATCH_BUFFER_SIZE, MAX_MESSAGE_BATCH_SIZE_BYTES));
+                .buffer(Math.min(INITIAL_BATCH_BUFFER_SIZE, MAX_MESSAGE_BATCH_SIZE_BYTES));
         List<MessageImpl<byte[]>> messages = Lists.newArrayListWithExpectedSize(size);
         MessageMetadata.Builder messageMetaBuilder = MessageMetadata.newBuilder();
 
@@ -221,8 +255,8 @@ public final class MessageRecordUtils {
         MessageMetadata msgMetadata = messageMetaBuilder.build();
 
         ByteBuf buf = Commands.serializeMetadataAndPayload(ChecksumType.Crc32c,
-            msgMetadata,
-            batchedMessageMetadataAndPayload);
+                msgMetadata,
+                batchedMessageMetadataAndPayload);
 
         messageMetaBuilder.recycle();
         msgMetadata.recycle();
@@ -334,7 +368,7 @@ public final class MessageRecordUtils {
 
     // Convert entries read from BookKeeper into Kafka Records
     // Entries can be batched messages, may need un-batch.
-    public static MemoryRecords entriesToRecords(List<org.apache.bookkeeper.mledger.Entry> entries, byte magic) {
+    public static MemoryRecords entriesToRecordsOld(List<org.apache.bookkeeper.mledger.Entry> entries, byte magic) {
         try (ByteBufferOutputStream outputStream = new ByteBufferOutputStream(DEFAULT_FETCH_BUFFER_SIZE)) {
             MemoryRecordsBuilder builder = new MemoryRecordsBuilder(outputStream, magic,
                 org.apache.kafka.common.record.CompressionType.NONE,
