@@ -143,6 +143,35 @@ public class TestUtils {
     }
 
     /**
+     * Wait until enough data (value records) has been consumed.
+     *
+     * @param consumerConfig     Kafka Consumer configuration
+     * @param topic              Topic to consume from
+     * @param expectedNumRecords Minimum number of expected records
+     * @param waitTime           Upper bound in waiting time in milliseconds
+     * @return All the records consumed, or null if no records are consumed
+     * @throws AssertionError       if the given wait time elapses
+     */
+    public static <V> List<V> waitUntilMinValuesRecordsReceived(final Properties consumerConfig,
+                                                                final String topic,
+                                                                final int expectedNumRecords,
+                                                                final long waitTime) throws InterruptedException {
+        final List<V> accumData = new ArrayList<>();
+        try (final Consumer<Object, V> consumer = createConsumer(consumerConfig)) {
+            final TestCondition valuesRead = () -> {
+                final List<V> readData =
+                        readValues(topic, consumer, waitTime, expectedNumRecords);
+                accumData.addAll(readData);
+                return accumData.size() >= expectedNumRecords;
+            };
+            final String conditionDetails =
+                    "Did not receive all " + expectedNumRecords + " records from topic " + topic;
+            TestUtils.waitForCondition(valuesRead, waitTime, conditionDetails);
+        }
+        return accumData;
+    }
+
+    /**
      * Recursively delete the given file/directory and any subfiles (if any exist).
      *
      * @param file The root file at which to begin deleting
@@ -404,5 +433,26 @@ public class TestUtils {
 
     private static boolean continueConsuming(final int messagesConsumed, final int maxMessages) {
         return maxMessages <= 0 || messagesConsumed < maxMessages;
+    }
+
+    /**
+     * Returns up to `maxMessages` message-values from the topic.
+     *
+     * @param topic          Kafka topic to read messages from
+     * @param consumer       Kafka consumer
+     * @param waitTime       Maximum wait time in milliseconds
+     * @param maxMessages    Maximum number of messages to read via the consumer.
+     * @return The values retrieved via the consumer.
+     */
+    private static <V> List<V> readValues(final String topic,
+                                          final Consumer<Object, V> consumer,
+                                          final long waitTime,
+                                          final int maxMessages) {
+        final List<V> returnList = new ArrayList<>();
+        final List<KeyValue<Object, V>> kvs = readKeyValues(topic, consumer, waitTime, maxMessages);
+        for (final KeyValue<?, V> kv : kvs) {
+            returnList.add(kv.value);
+        }
+        return returnList;
     }
 }

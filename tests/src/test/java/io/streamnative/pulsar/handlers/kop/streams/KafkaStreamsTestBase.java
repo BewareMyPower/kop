@@ -37,7 +37,7 @@ public abstract class KafkaStreamsTestBase extends KopProtocolHandlerTestBase {
     protected String bootstrapServers;
     @Getter
     private int testNo = 0; // the suffix of the prefix of test topic name or application id, etc.
-    private Properties streamsConfiguration;
+    protected Properties streamsConfiguration;
     protected StreamsBuilder builder; // the builder to build `kafkaStreams` and other objects of Kafka Streams
     protected KafkaStreams kafkaStreams;
 
