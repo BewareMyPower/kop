@@ -2,28 +2,24 @@
 
 ## KoP authentication
 
-> **Tip**
-> For more details about Kafka authentication, see [Kafka security documentation](https://kafka.apache.org/documentation/#security_sasl).
+KoP support following SASL mechanisms:
 
-To forward your credentials, `SASL-PLAIN` is used on the Kafka client side. The two important settings are `username` and `password`:
+- PLAIN
+- OAUTHBEARER
 
-* The `username` of Kafka JAAS is the `tenant/namespace`, in which Kafka’s topics are stored in Pulsar.
-
-    For example, `public/default`.
-
-* The `password` must be your token authentication parameters from Pulsar.
-
-    For example, `token:xxx`.
-
-    The token can be created by Pulsar tokens tools. The role is the `subject` for token. It is embedded in the created token, and the broker can get `role` by parsing this token.
-
-## Enable authentication on Pulsar broker
-
-To enable KoP authentication, you need to set all the options required by the Pulsar token based authentication and set `saslAllowedMechanisms` (set it to`PLAIN`). The Kafka authentication is forwarded to Pulsar's JWT (Json Web Token) authentication, so you also need to configure the [JWT authentication](https://pulsar.apache.org/docs/en/security-jwt/).
+You must configure it in broker's configuration file, take `PLAIN` for example:
 
 ```properties
 saslAllowedMechanisms=PLAIN
+```
 
+## Enable authentication on Pulsar broker
+
+### PLAIN mechanism
+
+For PLAIN mechanism, the Kafka authentication is forwarded to Pulsar's JWT (Json Web Token) authentication, so you also need to configure the [JWT authentication](https://pulsar.apache.org/docs/en/security-jwt/).
+
+```properties
 # Configuration to enable authentication and authorization
 authenticationEnabled=true
 authorizationEnabled=true
@@ -38,7 +34,44 @@ superUserRoles=<super-user-roles>
 tokenSecretKey=file:///path/to/secret.key
 ```
 
+### OAUTHBEARER mechanism
+
+For OAUTHBEARER mechanism, you can use `AuthenticationProviderToken` or your own authentication provider to process the access token from OAuth 2.0 server.
+
+What's different from PLAIN mechanism is that you must specify the [AuthenticateCallbackHandler](http://kafka.apache.org/20/javadoc/index.html?org/apache/kafka/common/security/auth/AuthenticateCallbackHandler.html) and its related config file.
+
+KoP provides a builtin `AuthenticateCallbackHandler` that uses Pulsar's authenticate provider for authentication.
+
+```properties
+# Use the KoP's builtin handler here
+kopOauth2AuthenticateCallbackHandler=io.streamnative.pulsar.handlers.kop.security.oauth.OauthValidatorCallbackHandler
+# The Java properties config file of OauthValidatorCallbackHandler
+kopOauth2ConfigFile=conf/kop-handler.properties
+```
+
+In the config file, you need to specify the validate method, which is what the provider's `getAuthMethodName()` returns. If you're using `AuthenticationProviderToken`, since`AuthenticationProviderToken#getAuthMethodName()` returns `token`, you need to configure as below.
+
+```properties
+oauth.validate.method=token
+```
+
+See [AuthenticationProvider](https://pulsar.apache.org/docs/en/security-extending/#proxybroker-authentication-plugin) for details.
+
 ## Enable authentication on Kafka client
+
+### PLAIN mechanism
+
+To forward your credentials, `SASL-PLAIN` is used on the Kafka client side. The two important settings are `username` and `password`:
+
+* The `username` of Kafka JAAS is the `tenant/namespace`, in which Kafka’s topics are stored in Pulsar.
+
+  For example, `public/default`.
+
+* The `password` must be your token authentication parameters from Pulsar.
+
+  For example, `token:xxx`.
+
+  The token can be created by Pulsar tokens tools. The role is the `subject` for token. It is embedded in the created token, and the broker can get `role` by parsing this token.
 
 You can use the following code to enable SASL-PLAIN through jaas.
 
@@ -55,6 +88,61 @@ props.put("sasl.mechanism", "PLAIN");
 ```
 
 Kafka consumers and Kafka producers can use the props to connect to brokers.
+
+### OAUTHBEARER mechanism
+
+Kafka client uses its own login callback handler to get access token from an OAuth 2.0 server, see [login callback handler for token retrieval](https://docs.confluent.io/platform/current/kafka/authentication_sasl/authentication_sasl_oauth.html#login-callback-handler-for-token-retrievalKoP).
+
+KoP provides a builtin callback handler. You can install it to your local Maven repository by
+
+```bash
+$ mvn clean install -pl oauth-client -DskipTests
+```
+
+Then add following dependency to your `pom.xml`
+
+```xml
+    <dependency>
+      <groupId>io.streamnative.pulsar.handlers</groupId>
+      <artifactId>oauth-client</artifactId>
+      <version>2.8.0-SNAPSHOT</version>
+      <exclusions>
+        <exclusion>
+          <groupId>org.apache.logging.log4j</groupId>
+          <artifactId>log4j-slf4j-impl</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+
+    <!-- KoP's login callback handler has a pulsar-client dependency -->
+    <dependency>
+      <groupId>org.apache.pulsar</groupId>
+      <artifactId>pulsar-client</artifactId>
+      <version>2.8.0-SNAPSHOT</version>
+    </dependency>
+```
+
+> NOTE: You need to replace the `2.8.0-SNAPSHOT` to the actual version.
+
+In your client code, you need to configure your producer or consumer with following properties
+
+```properties
+sasl.login.callback.handler.class=io.streamnative.pulsar.handlers.kop.security.oauth.OauthLoginCallbackHandler
+security.protocol=SASL_PLAINTEXT
+sasl.mechanism=OAUTHBEARER
+sasl.jaas.config=org.apache.kafka.common.security.oauthbearer.OAuthBearerLoginModule \
+   required oauth.issuer.url="..."\
+   oauth.credentials.url="..."\
+   oauth.audience="...";
+```
+
+As we can see, there're some required configs that are marked with `...` in `sasl.jaas.config`. They are from the [Pulsar client's credentials](http://pulsar.apache.org/docs/en/security-oauth2/#client-credentials).
+
+| Kafka config name       | Pulsar config name |
+| ----------------------- | ------------------ |
+| `oauth.issuer.url`      | `issuerUrl`        |
+| `oauth.credentials.url` | `privateKey`       |
+| `oauth.audience`        | `audience`         |
 
 ## SSL connection
 
