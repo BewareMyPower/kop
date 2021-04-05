@@ -15,6 +15,7 @@ package io.streamnative.pulsar.handlers.kop;
 
 import static com.google.common.base.Preconditions.checkState;
 
+import io.streamnative.pulsar.handlers.kop.coordinator.group.OffsetAcker;
 import io.streamnative.pulsar.handlers.kop.utils.KopTopic;
 import java.net.InetSocketAddress;
 import java.util.List;
@@ -387,8 +388,15 @@ public class KafkaTopicManager {
             return consumerFuture;
         }
 
+        final OffsetAcker offsetAcker = requestHandler.getGroupCoordinator().getOffsetAcker();
         final CompletableFuture<org.apache.pulsar.client.api.Consumer<byte[]>> offsetConsumerFuture =
-                requestHandler.getGroupCoordinator().getOffsetAcker().getConsumer(groupId, kafkaPartition);
+                offsetAcker.getConsumer(groupId, kafkaPartition);
+        if (offsetConsumerFuture == null) {
+            log.warn("No offset consumer for [group={}] [topic={}]", groupId, kafkaPartition);
+            consumerFuture.complete(null);
+            return consumerFuture;
+        }
+
         return CONSUMERS_CACHE.computeIfAbsent(groupId, group -> {
             try {
                 TopicName topicName = TopicName.get(KopTopic.toString(kafkaPartition));
@@ -402,6 +410,7 @@ public class KafkaTopicManager {
                     if (e != null) {
                         log.warn("Failed to create offset consumer for [group={}] [topic={}]: {}",
                                 groupId, kafkaPartition, e.getMessage());
+                        offsetAcker.removeConsumer(groupId, kafkaPartition);
                     }
                     final List<Consumer> consumers =
                             persistentTopic.getSubscriptions().get(groupId).getDispatcher().getConsumers();
