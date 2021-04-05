@@ -17,6 +17,7 @@ import static com.google.common.base.Preconditions.checkState;
 
 import io.streamnative.pulsar.handlers.kop.utils.KopTopic;
 import java.net.InetSocketAddress;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
@@ -379,14 +380,15 @@ public class KafkaTopicManager {
     }
 
     public CompletableFuture<Consumer> getGroupConsumers(String groupId, TopicPartition kafkaPartition) {
-        // make sure internal consumer existed
         CompletableFuture<Consumer> consumerFuture = new CompletableFuture<>();
-        if (groupId == null || groupId.isEmpty() || !requestHandler.getGroupCoordinator()
-                .getOffsetAcker().checkConsumerCreated(groupId, kafkaPartition)) {
-            log.warn("No consumer for group {} and partition {} yet", groupId, kafkaPartition);
+        if (groupId == null || groupId.isEmpty()) {
+            log.warn("Try to get group consumers with empty group id");
             consumerFuture.complete(null);
             return consumerFuture;
         }
+
+        final CompletableFuture<org.apache.pulsar.client.api.Consumer<byte[]>> offsetConsumerFuture =
+                requestHandler.getGroupCoordinator().getOffsetAcker().getConsumer(groupId, kafkaPartition);
         return CONSUMERS_CACHE.computeIfAbsent(groupId, group -> {
             try {
                 TopicName topicName = TopicName.get(KopTopic.toString(kafkaPartition));
@@ -396,10 +398,23 @@ public class KafkaTopicManager {
                         .getBrokerService().getMultiLayerTopicsMap()
                         .get(topicName.getNamespace()).get(namespaceBundle.toString())
                         .get(topicName.toString());
-                // only one consumer existed for internal subscription
-                Consumer consumer = persistentTopic.getSubscriptions()
-                        .get(groupId).getDispatcher().getConsumers().get(0);
-                consumerFuture.complete(consumer);
+                offsetConsumerFuture.whenComplete((ignored, e) -> {
+                    if (e != null) {
+                        log.warn("Failed to create offset consumer for [group={}] [topic={}]: {}",
+                                groupId, kafkaPartition, e.getMessage());
+                    }
+                    final List<Consumer> consumers =
+                            persistentTopic.getSubscriptions().get(groupId).getDispatcher().getConsumers();
+                    if (consumers.isEmpty()) {
+                        log.error("There's no internal consumer for [group={}]", groupId);
+                        consumerFuture.complete(null);
+                        return;
+                    }
+                    // only one consumer existed for internal subscription
+                    final Consumer consumer = persistentTopic.getSubscriptions()
+                            .get(groupId).getDispatcher().getConsumers().get(0);
+                    consumerFuture.complete(consumer);
+                });
             } catch (Exception e) {
                 log.error("get topic error", e);
                 consumerFuture.complete(null);

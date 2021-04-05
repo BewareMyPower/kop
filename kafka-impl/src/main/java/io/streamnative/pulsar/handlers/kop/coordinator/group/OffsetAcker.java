@@ -18,13 +18,13 @@ import io.streamnative.pulsar.handlers.kop.utils.KopTopic;
 import io.streamnative.pulsar.handlers.kop.utils.OffsetSearchPredicate;
 import java.io.Closeable;
 import java.nio.ByteBuffer;
-import java.util.Collections;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 
+import lombok.NonNull;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.bookkeeper.mledger.impl.PositionImpl;
 import org.apache.kafka.clients.consumer.internals.ConsumerProtocol;
@@ -35,7 +35,6 @@ import org.apache.pulsar.broker.service.persistent.PersistentTopic;
 import org.apache.pulsar.client.api.Consumer;
 import org.apache.pulsar.client.api.ConsumerBuilder;
 import org.apache.pulsar.client.api.SubscriptionInitialPosition;
-import org.apache.pulsar.client.api.SubscriptionType;
 import org.apache.pulsar.client.impl.MessageIdImpl;
 import org.apache.pulsar.client.impl.PulsarClientImpl;
 
@@ -45,8 +44,6 @@ import org.apache.pulsar.client.impl.PulsarClientImpl;
 @Slf4j
 public class OffsetAcker implements Closeable {
 
-    private static final Map<TopicPartition, CompletableFuture<Consumer<byte[]>>>
-            EMPTY_GROUP_CONSUMERS = Collections.emptyMap();
     private final ConsumerBuilder<byte[]> consumerBuilder;
     private final BrokerService brokerService;
     // A map whose
@@ -162,13 +159,8 @@ public class OffsetAcker implements Closeable {
         close(consumers.keySet());
     }
 
-    public boolean checkConsumerCreated(String groupId, TopicPartition topicPartition) {
-        final CompletableFuture<Consumer<byte[]>> consumerFuture =
-                consumers.getOrDefault(groupId, EMPTY_GROUP_CONSUMERS).get(topicPartition);
-        return (consumerFuture != null && consumerFuture.isDone());
-    }
-
-    private CompletableFuture<Consumer<byte[]>> getConsumer(String groupId, TopicPartition topicPartition) {
+    @NonNull
+    public CompletableFuture<Consumer<byte[]>> getConsumer(String groupId, TopicPartition topicPartition) {
         Map<TopicPartition, CompletableFuture<Consumer<byte[]>>> group = consumers
             .computeIfAbsent(groupId, gid -> new ConcurrentHashMap<>());
         return group.computeIfAbsent(
@@ -176,12 +168,12 @@ public class OffsetAcker implements Closeable {
             partition -> createConsumer(groupId, partition));
     }
 
+    @NonNull
     private CompletableFuture<Consumer<byte[]>> createConsumer(String groupId, TopicPartition topicPartition) {
         KopTopic kopTopic = new KopTopic(topicPartition.topic());
         return consumerBuilder.clone()
                 .topic(kopTopic.getPartitionName(topicPartition.partition()))
                 .subscriptionName(groupId)
-                .subscriptionType(SubscriptionType.Failover)
                 .subscribeAsync();
     }
 

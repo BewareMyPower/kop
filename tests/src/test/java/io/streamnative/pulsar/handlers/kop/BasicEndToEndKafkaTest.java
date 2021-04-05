@@ -63,6 +63,7 @@ public class BasicEndToEndKafkaTest extends BasicEndToEndTestBase {
     @Test(timeOut = 20000)
     public void testKafkaConsumerMetrics() throws Exception {
         final String topic = "test-kafka-consumer-metrics";
+        final String group = "my-group-test-metrics";
         final List<String> expectedMessages = Arrays.asList("A", "B", "C");
 
         @Cleanup
@@ -70,7 +71,7 @@ public class BasicEndToEndKafkaTest extends BasicEndToEndTestBase {
         sendSingleMessages(kafkaProducer, topic, expectedMessages);
 
         @Cleanup
-        final KafkaConsumer<String, String> kafkaConsumer = newKafkaConsumer(topic);
+        final KafkaConsumer<String, String> kafkaConsumer = newKafkaConsumer(topic, group);
         List<String> kafkaReceives = receiveMessages(kafkaConsumer, expectedMessages.size());
         assertEquals(kafkaReceives, expectedMessages);
 
@@ -82,7 +83,7 @@ public class BasicEndToEndKafkaTest extends BasicEndToEndTestBase {
                 .get(bundle.toString())
                 .get(topicName.toString());
         final ConsumerStats stats =
-                persistentTopic.getSubscriptions().get(GROUP_ID).getDispatcher().getConsumers().get(0).getStats();
+                persistentTopic.getSubscriptions().get(group).getDispatcher().getConsumers().get(0).getStats();
         log.info("Consumer stats: [msgOutCounter={}] [bytesOutCounter={}]",
                 stats.msgOutCounter, stats.bytesOutCounter);
         assertEquals(stats.msgOutCounter, expectedMessages.size());
