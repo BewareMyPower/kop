@@ -48,6 +48,7 @@ import org.testng.annotations.BeforeClass;
  */
 @Slf4j
 public class BasicEndToEndTestBase extends KopProtocolHandlerTestBase {
+    protected static final String GROUP_ID = "my-group";
 
     public BasicEndToEndTestBase(final String entryFormat) {
         super(entryFormat);
@@ -78,10 +79,14 @@ public class BasicEndToEndTestBase extends KopProtocolHandlerTestBase {
     }
 
     protected KafkaConsumer<String, String> newKafkaConsumer(final String topic) {
+        return newKafkaConsumer(topic, null);
+    }
+
+    protected KafkaConsumer<String, String> newKafkaConsumer(final String topic, final String groupId) {
         final Properties props =  new Properties();
         props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers());
         props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
-        props.put(ConsumerConfig.GROUP_ID_CONFIG, "my-group");
+        props.put(ConsumerConfig.GROUP_ID_CONFIG, (groupId == null) ? GROUP_ID : groupId);
         props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
         props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
 

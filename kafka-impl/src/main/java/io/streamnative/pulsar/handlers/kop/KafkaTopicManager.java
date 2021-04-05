@@ -382,8 +382,8 @@ public class KafkaTopicManager {
         // make sure internal consumer existed
         CompletableFuture<Consumer> consumerFuture = new CompletableFuture<>();
         if (groupId == null || groupId.isEmpty() || !requestHandler.getGroupCoordinator()
-                .getOffsetAcker().getConsumer(groupId, kafkaPartition).isDone()) {
-            log.warn("not get consumer for group {} this time", groupId);
+                .getOffsetAcker().checkConsumerCreated(groupId, kafkaPartition)) {
+            log.warn("No consumer for group {} and partition {} yet", groupId, kafkaPartition);
             consumerFuture.complete(null);
             return consumerFuture;
         }

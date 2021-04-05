@@ -18,6 +18,7 @@ import io.streamnative.pulsar.handlers.kop.utils.KopTopic;
 import io.streamnative.pulsar.handlers.kop.utils.OffsetSearchPredicate;
 import java.io.Closeable;
 import java.nio.ByteBuffer;
+import java.util.Collections;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -44,8 +45,19 @@ import org.apache.pulsar.client.impl.PulsarClientImpl;
 @Slf4j
 public class OffsetAcker implements Closeable {
 
+    private static final Map<TopicPartition, CompletableFuture<Consumer<byte[]>>>
+            EMPTY_GROUP_CONSUMERS = Collections.emptyMap();
     private final ConsumerBuilder<byte[]> consumerBuilder;
     private final BrokerService brokerService;
+    // A map whose
+    //   key is group id,
+    //   value is a map whose
+    //     key is the partition,
+    //     value is the created future of consumer.
+    // The consumer, whose subscription is the group id, is used for acknowledging message id cumulatively.
+    // This behavior is equivalent to committing offsets in Kafka.
+    private final Map<String, Map<TopicPartition, CompletableFuture<Consumer<byte[]>>>>
+            consumers = new ConcurrentHashMap<>();
 
     public OffsetAcker(PulsarClientImpl pulsarClient) {
         this.consumerBuilder = pulsarClient.newConsumer()
@@ -60,9 +72,6 @@ public class OffsetAcker implements Closeable {
                 .subscriptionInitialPosition(SubscriptionInitialPosition.Earliest);
         this.brokerService = brokerService;
     }
-
-    // map off consumser: <groupId, consumers>
-    Map<String, Map<TopicPartition, CompletableFuture<Consumer<byte[]>>>> consumers = new ConcurrentHashMap<>();
 
     public void addOffsetsTracker(String groupId, byte[] assignment) {
         ByteBuffer assignBuffer = ByteBuffer.wrap(assignment);
@@ -130,7 +139,7 @@ public class OffsetAcker implements Closeable {
             if (!consumers.containsKey(groupId)) {
                 return;
             }
-            consumers.get(groupId).values().forEach(consumerFuture -> {
+            consumers.remove(groupId).values().forEach(consumerFuture -> {
                 consumerFuture.whenComplete((consumer, throwable) -> {
                     if (throwable != null) {
                         log.warn("Error when get consumer for consumer group close:", throwable);
@@ -153,7 +162,13 @@ public class OffsetAcker implements Closeable {
         close(consumers.keySet());
     }
 
-    public CompletableFuture<Consumer<byte[]>> getConsumer(String groupId, TopicPartition topicPartition) {
+    public boolean checkConsumerCreated(String groupId, TopicPartition topicPartition) {
+        final CompletableFuture<Consumer<byte[]>> consumerFuture =
+                consumers.getOrDefault(groupId, EMPTY_GROUP_CONSUMERS).get(topicPartition);
+        return (consumerFuture != null && consumerFuture.isDone());
+    }
+
+    private CompletableFuture<Consumer<byte[]>> getConsumer(String groupId, TopicPartition topicPartition) {
         Map<TopicPartition, CompletableFuture<Consumer<byte[]>>> group = consumers
             .computeIfAbsent(groupId, gid -> new ConcurrentHashMap<>());
         return group.computeIfAbsent(
