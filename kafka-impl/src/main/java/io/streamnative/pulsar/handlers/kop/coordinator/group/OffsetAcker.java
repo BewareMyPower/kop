@@ -34,6 +34,7 @@ import org.apache.pulsar.broker.service.persistent.PersistentTopic;
 import org.apache.pulsar.client.api.Consumer;
 import org.apache.pulsar.client.api.ConsumerBuilder;
 import org.apache.pulsar.client.api.SubscriptionInitialPosition;
+import org.apache.pulsar.client.api.SubscriptionType;
 import org.apache.pulsar.client.impl.MessageIdImpl;
 import org.apache.pulsar.client.impl.PulsarClientImpl;
 
@@ -165,6 +166,7 @@ public class OffsetAcker implements Closeable {
         return consumerBuilder.clone()
                 .topic(kopTopic.getPartitionName(topicPartition.partition()))
                 .subscriptionName(groupId)
+                .subscriptionType(SubscriptionType.Failover)
                 .subscribeAsync();
     }
 
