@@ -390,9 +390,11 @@ public class KafkaTopicManager {
         }
 
         // The future of the offset consumer should be created before in `GroupCoordinator#handleSyncGroup`
-        final OffsetAcker offsetAcker = requestHandler.getGroupCoordinator().getOffsetAcker();
+        final Optional<OffsetAcker> optOffsetAcker = requestHandler.getGroupCoordinator().getOptOffsetAcker();
         final CompletableFuture<org.apache.pulsar.client.api.Consumer<byte[]>> offsetConsumerFuture =
-                offsetAcker.getConsumer(groupId, kafkaPartition);
+                (optOffsetAcker.isPresent()
+                        ? optOffsetAcker.get().getConsumer(groupId, kafkaPartition)
+                        : CompletableFuture.completedFuture(null));
         if (offsetConsumerFuture == null) {
             if (log.isDebugEnabled()) {
                 log.debug("No offset consumer for [group={}] [topic={}]", groupId, kafkaPartition);
@@ -416,7 +418,7 @@ public class KafkaTopicManager {
                     if (e != null) {
                         log.warn("Failed to create offset consumer for [group={}] [topic={}]: {}",
                                 groupId, kafkaPartition, e.getMessage());
-                        offsetAcker.removeConsumer(groupId, kafkaPartition);
+                        optOffsetAcker.ifPresent(offsetAcker -> offsetAcker.removeConsumer(groupId, kafkaPartition));
                         // Here we don't return because the `Consumer` in broker side may be created already
                     }
                     // Double check for if the `Consumer` in broker side has been created

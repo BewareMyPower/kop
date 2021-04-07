@@ -256,7 +256,7 @@ public class KafkaRequestHandler extends KafkaCommandDecoder {
         if (isActive.getAndSet(false)) {
             log.info("close channel {}", ctx.channel());
             writeAndFlushWhenInactiveChannel(ctx.channel());
-            groupCoordinator.getOffsetAcker().close(groupIds);
+            groupCoordinator.getOptOffsetAcker().ifPresent(offsetAcker -> offsetAcker.close(groupIds));
             ctx.close();
             topicManager.close();
             String clientHost = ctx.channel().remoteAddress().toString();

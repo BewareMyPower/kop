@@ -120,14 +120,16 @@ public class GroupCoordinator {
                 .timeoutTimer(timer)
                 .build();
 
-        OffsetAcker offsetAcker = new OffsetAcker(pulsarClient, brokerService);
+        final Optional<OffsetAcker> optOffsetAcker = (kafkaServiceConfiguration.isEnablePulsarAck()
+                ? Optional.of(new OffsetAcker(pulsarClient, brokerService))
+                : Optional.empty());
         return new GroupCoordinator(
             groupConfig,
             metadataManager,
             heartbeatPurgatory,
             joinPurgatory,
             time,
-            offsetAcker
+            optOffsetAcker
         );
     }
 
@@ -152,7 +154,7 @@ public class GroupCoordinator {
 
     // for topic backlog tracking.
     @Getter
-    private final OffsetAcker offsetAcker;
+    private final Optional<OffsetAcker> optOffsetAcker;
     private final AtomicBoolean isActive = new AtomicBoolean(false);
     private final GroupConfig groupConfig;
     private final GroupMetadataManager groupManager;
@@ -166,13 +168,13 @@ public class GroupCoordinator {
         DelayedOperationPurgatory<DelayedHeartbeat> heartbeatPurgatory,
         DelayedOperationPurgatory<DelayedJoin> joinPurgatory,
         Time time,
-        OffsetAcker offsetAcker) {
+        Optional<OffsetAcker> optOffsetAcker) {
         this.groupConfig = groupConfig;
         this.groupManager = groupManager;
         this.heartbeatPurgatory = heartbeatPurgatory;
         this.joinPurgatory = joinPurgatory;
         this.time = time;
-        this.offsetAcker = offsetAcker;
+        this.optOffsetAcker = optOffsetAcker;
     }
 
     /**
@@ -195,7 +197,7 @@ public class GroupCoordinator {
         groupManager.shutdown();
         heartbeatPurgatory.shutdown();
         joinPurgatory.shutdown();
-        offsetAcker.close();
+        optOffsetAcker.ifPresent(OffsetAcker::close);
         log.info("Shutdown group coordinator completely.");
     }
 
@@ -467,7 +469,7 @@ public class GroupCoordinator {
 
         resultFuture.whenCompleteAsync((kv, throwable) -> {
             if (throwable == null && kv.getKey() == Errors.NONE) {
-                offsetAcker.addOffsetsTracker(groupId, kv.getValue());
+                optOffsetAcker.ifPresent(offsetAcker -> offsetAcker.addOffsetsTracker(groupId, kv.getValue()));
             }
         });
         return resultFuture;
@@ -679,7 +681,7 @@ public class GroupCoordinator {
             );
         }
 
-        offsetAcker.close(groupIds);
+        optOffsetAcker.ifPresent(offsetAcker -> offsetAcker.close(groupIds));
         return groupErrors;
     }
 
@@ -844,7 +846,7 @@ public class GroupCoordinator {
                 // The group is only using Kafka to store offsets.
                 // Also, for transactional offset commits we don't need to validate group membership
                 // and the generation.
-                offsetAcker.ackOffsets(group.groupId(), offsetMetadata);
+                optOffsetAcker.ifPresent(offsetAcker -> offsetAcker.ackOffsets(group.groupId(), offsetMetadata));
                 return groupManager.storeOffsets(group, memberId, offsetMetadata, producerId, producerEpoch);
             } else if (group.is(CompletingRebalance)) {
                 return CompletableFuture.completedFuture(
@@ -861,7 +863,7 @@ public class GroupCoordinator {
             } else {
                 MemberMetadata member = group.get(memberId);
                 completeAndScheduleNextHeartbeatExpiration(group, member);
-                offsetAcker.ackOffsets(group.groupId(), offsetMetadata);
+                optOffsetAcker.ifPresent(offsetAcker -> offsetAcker.ackOffsets(group.groupId(), offsetMetadata));
                 return groupManager.storeOffsets(
                     group, memberId, offsetMetadata
                 );

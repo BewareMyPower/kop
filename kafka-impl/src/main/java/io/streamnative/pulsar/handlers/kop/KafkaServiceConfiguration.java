@@ -327,6 +327,16 @@ public class KafkaServiceConfiguration extends ServiceConfiguration {
     )
     private int kopPrometheusStatsLatencyRolloverSeconds = 60;
 
+    @FieldContext(
+            category = CATEGORY_KOP,
+            doc = "By default, KoP will acknowledge offset's associated message id cumulatively so that"
+                    + " Pulsar consumer can start consuming from where the Kafka consumer's offset locates.\n"
+                    + "If your entryFormat is \"kafka\", Pulsar consumer won't be enable to consume messages from Kafka"
+                    + " producer, so you can disable this option.\n"
+                    + "Default: true."
+    )
+    private boolean enablePulsarAck = true;
+
     public @NonNull String getKafkaAdvertisedListeners() {
         if (kafkaAdvertisedListeners != null) {
             return kafkaAdvertisedListeners;
