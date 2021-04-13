@@ -16,6 +16,7 @@ package io.streamnative.pulsar.handlers.kop;
 import static org.apache.kafka.common.protocol.CommonFields.THROTTLE_TIME_MS;
 
 import com.google.common.collect.Lists;
+import io.netty.buffer.ByteBufUtil;
 import io.netty.util.Recycler;
 import io.netty.util.Recycler.Handle;
 import io.streamnative.pulsar.handlers.kop.KafkaCommandDecoder.KafkaHeaderAndRequest;
@@ -368,7 +369,18 @@ public final class MessageFetchContext {
                             });
                             CompletableFuture<Consumer> consumerFuture = requestHandler.getTopicManager()
                                     .getGroupConsumers(groupName, kafkaPartition);
-                            final MemoryRecords records = requestHandler.getEntryFormatter().decode(entries, magic);
+                            final MemoryRecords records = safeDecode(entries, magic);
+                            if (records == null) {
+                                responseData.put(kafkaPartition, new FetchResponse.PartitionData(
+                                        Errors.CORRUPT_MESSAGE,
+                                        highWatermark,
+                                        highWatermark,
+                                        highWatermark,
+                                        null,
+                                        null
+                                ));
+                                return;
+                            }
                             // collect consumer metrics
                             EntryFormatter.updateConsumerStats(records, consumerFuture);
 
@@ -409,6 +421,19 @@ public final class MessageFetchContext {
                             tc, highWaterMarkMap);
                 }
             });
+    }
+
+    private MemoryRecords safeDecode(final List<Entry> entries, final byte magic) {
+        try {
+            return requestHandler.getEntryFormatter().decode(entries, magic);
+        } catch (IllegalArgumentException e) {
+            final String dumpInfo = entries.stream().map(entry ->
+                    String.format("(%d, %d) %s",
+                            entry.getLedgerId(), entry.getEntryId(), ByteBufUtil.hexDump(entry.getData()))
+            ).reduce("", (s1, s2) -> s1 + "\n" + s2);
+            log.error("Failed to decode entries: {}, dump entries: {}", e.getMessage(), dumpInfo);
+            return null;
+        }
     }
 
     private Map<TopicPartition, CompletableFuture<List<Entry>>> readAllCursorOnce(
