@@ -1301,8 +1301,7 @@ public class KafkaRequestHandler extends KafkaCommandDecoder {
             });
         }
 
-        MessageFetchContext fetchContext = MessageFetchContext.get(this, requestStats);
-        fetchContext.handleFetch(resultFuture, fetch, transactionCoordinator, fetchPurgatory);
+        MessageFetchContext.get(this, fetch, resultFuture).handleFetch();
     }
 
     protected void handleJoinGroupRequest(KafkaHeaderAndRequest joinGroup,
