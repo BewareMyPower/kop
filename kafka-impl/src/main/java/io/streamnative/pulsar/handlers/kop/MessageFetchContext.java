@@ -244,6 +244,12 @@ public final class MessageFetchContext {
                         return;
                     }
 
+                    // Add new offset back to TCM after entries are read successfully
+                    final Pair<ManagedCursor, Long> currentCursorLongPair = cursors.get(topicPartition);
+                    if (currentCursorLongPair != null) {
+                        tcm.add(currentCursorLongPair.getRight(), currentCursorLongPair);
+                    }
+
                     final long lso = (readCommitted
                             ? tc.getLastStableOffset(TopicName.get(fullTopicName), highWatermark)
                             : highWatermark);
