@@ -202,15 +202,18 @@ public final class MessageFetchContext {
                 (tc != null && fetchRequest.isolationLevel().equals(IsolationLevel.READ_COMMITTED));
 
         fetchRequest.fetchData().forEach((topicPartition, partitionData) -> {
+            final long startPrepareMetadataNanos = MathUtils.nowInNano();
             final long offset = partitionData.fetchOffset;
 
             final String fullTopicName = KopTopic.toString(topicPartition);
             // the future that is returned by getTopicConsumerManager is always completed normally
             topicManager.getTopicConsumerManager(fullTopicName).thenAccept(tcm -> {
                 if (tcm == null) {
-                    addErrorPartitionResponse(topicPartition, Errors.NOT_LEADER_FOR_PARTITION);
+                    statsLogger.getPrepareMetadataStats().registerFailedEvent(
+                            MathUtils.elapsedNanos(startPrepareMetadataNanos), TimeUnit.NANOSECONDS);
                     // remove null future cache
                     KafkaTopicManager.removeKafkaTopicConsumerManager(KopTopic.toString(topicPartition));
+                    addErrorPartitionResponse(topicPartition, Errors.NOT_LEADER_FOR_PARTITION);
                     return;
                 }
 
@@ -231,6 +234,8 @@ public final class MessageFetchContext {
                 cursors.put(topicPartition, cursorLongPair);
                 final long highWatermark = MessageIdUtils.getHighWatermark(
                         cursorLongPair.getLeft().getManagedLedger());
+                statsLogger.getPrepareMetadataStats().registerSuccessfulEvent(
+                        MathUtils.elapsedNanos(startPrepareMetadataNanos), TimeUnit.NANOSECONDS);
                 readEntries(topicPartition).whenComplete((entries, throwable) -> {
                     if (throwable != null) {
                         tcm.deleteOneCursorAsync(cursorLongPair.getLeft(), "cursor.readEntry fail. deleteCursor");
