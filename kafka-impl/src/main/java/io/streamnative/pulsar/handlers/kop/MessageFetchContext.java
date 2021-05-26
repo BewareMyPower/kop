@@ -334,36 +334,36 @@ public final class MessageFetchContext {
 
             @Override
             public void readEntriesComplete(List<Entry> entries, Object ctx) {
-                if (entries.isEmpty()) {
-                    return;
-                }
-                final Entry lastEntry = entries.get(entries.size() - 1);
-                final PositionImpl currentPosition = PositionImpl.get(lastEntry.getLedgerId(), lastEntry.getEntryId());
+                if (!entries.isEmpty()) {
+                    final Entry lastEntry = entries.get(entries.size() - 1);
+                    final PositionImpl currentPosition = PositionImpl.get(
+                            lastEntry.getLedgerId(), lastEntry.getEntryId());
 
-                try {
-                    final long lastOffset = MessageIdUtils.peekOffsetFromEntry(lastEntry);
+                    try {
+                        final long lastOffset = MessageIdUtils.peekOffsetFromEntry(lastEntry);
 
-                    // commit the offset, so backlog not affect by this cursor.
-                    commitOffset((NonDurableCursorImpl) cursor, currentPosition);
+                        // commit the offset, so backlog not affect by this cursor.
+                        commitOffset((NonDurableCursorImpl) cursor, currentPosition);
 
-                    // and add back to TCM when all read complete.
-                    cursorOffset.set(lastOffset + 1);
+                        // and add back to TCM when all read complete.
+                        cursorOffset.set(lastOffset + 1);
 
-                    if (log.isDebugEnabled()) {
-                        log.debug("Topic {} success read entry: ledgerId: {}, entryId: {}, size: {},"
-                                        + " ConsumerManager original offset: {}, lastEntryPosition: {}, "
-                                        + "nextOffset: {}",
-                                topicPartition, lastEntry.getLedgerId(), lastEntry.getEntryId(),
-                                lastEntry.getLength(), originalOffset, currentPosition,
-                                cursorOffset.get());
+                        if (log.isDebugEnabled()) {
+                            log.debug("Topic {} success read entry: ledgerId: {}, entryId: {}, size: {},"
+                                            + " ConsumerManager original offset: {}, lastEntryPosition: {}, "
+                                            + "nextOffset: {}",
+                                    topicPartition, lastEntry.getLedgerId(), lastEntry.getEntryId(),
+                                    lastEntry.getLength(), originalOffset, currentPosition,
+                                    cursorOffset.get());
+                        }
+                    } catch (Exception e) {
+                        log.error("[{}] Failed to peekOffsetFromEntry from position {}",
+                                topicPartition, currentPosition);
+                        messageReadStats.registerFailedEvent(
+                                MathUtils.elapsedNanos(startReadingMessagesNanos), TimeUnit.NANOSECONDS);
+                        readFuture.completeExceptionally(e);
+                        return;
                     }
-                } catch (Exception e) {
-                    log.error("[{}] Failed to peekOffsetFromEntry from position {}",
-                            topicPartition, currentPosition);
-                    messageReadStats.registerFailedEvent(
-                            MathUtils.elapsedNanos(startReadingMessagesNanos), TimeUnit.NANOSECONDS);
-                    readFuture.completeExceptionally(e);
-                    return;
                 }
 
                 messageReadStats.registerSuccessfulEvent(
