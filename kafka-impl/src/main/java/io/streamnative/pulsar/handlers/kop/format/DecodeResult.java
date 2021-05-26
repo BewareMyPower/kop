@@ -14,27 +14,50 @@
 package io.streamnative.pulsar.handlers.kop.format;
 
 import io.netty.buffer.ByteBuf;
-import lombok.AllArgsConstructor;
-import lombok.Data;
+import io.netty.util.Recycler;
+import io.netty.util.Recycler.Handle;
+import lombok.Getter;
 import org.apache.kafka.common.record.MemoryRecords;
 
 /**
  * Result of decode in entry formatter.
  */
-@Data
-@AllArgsConstructor
 public class DecodeResult {
 
+    private final Handle<DecodeResult> recyclerHandle;
+
+    private static final Recycler<DecodeResult> RECYCLER = new Recycler<DecodeResult>() {
+        @Override
+        protected DecodeResult newObject(Handle<DecodeResult> handle) {
+            return new DecodeResult(handle);
+        }
+    };
+
+    @Getter
     private MemoryRecords records;
     private ByteBuf releasedByteBuf;
 
-    public DecodeResult(MemoryRecords records) {
-        this.records = records;
+    private DecodeResult(Handle<DecodeResult> recyclerHandle) {
+        this.recyclerHandle = recyclerHandle;
+    }
+
+    public static DecodeResult get(MemoryRecords records, ByteBuf byteBuf) {
+        DecodeResult decodeResult = RECYCLER.get();
+        decodeResult.records = records;
+        decodeResult.releasedByteBuf = byteBuf;
+        return decodeResult;
     }
 
     public void release() {
         if (releasedByteBuf != null) {
             releasedByteBuf.release();
         }
+        recycle();
+    }
+
+    private void recycle() {
+        records = null;
+        releasedByteBuf = null;
+        recyclerHandle.recycle(this);
     }
 }

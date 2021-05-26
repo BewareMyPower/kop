@@ -181,7 +181,7 @@ public final class MessageFetchContext {
         // because this.decodeResults will be reset to null after resultFuture is completed.
         final List<DecodeResult> decodeResults = this.decodeResults;
         resultFuture.complete(
-                new ResponseCallbackWrapper(
+                ResponseCallbackWrapper.get(
                         new FetchResponse<>(
                                 Errors.NONE,
                                 orderedResponseData,

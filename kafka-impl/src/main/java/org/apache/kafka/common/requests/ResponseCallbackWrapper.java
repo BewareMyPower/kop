@@ -13,6 +13,8 @@
  */
 package org.apache.kafka.common.requests;
 
+import io.netty.util.Recycler;
+import io.netty.util.Recycler.Handle;
 import java.util.Map;
 import org.apache.kafka.common.protocol.Errors;
 import org.apache.kafka.common.protocol.types.Struct;
@@ -23,12 +25,26 @@ import org.apache.kafka.common.protocol.types.Struct;
  */
 public class ResponseCallbackWrapper extends AbstractResponse {
 
+    private final Handle<ResponseCallbackWrapper> recyclerHandle;
     private AbstractResponse abstractResponse;
     private ResponseCallback responseCallback;
 
-    public ResponseCallbackWrapper(AbstractResponse abstractResponse, ResponseCallback responseCallback) {
-        this.abstractResponse = abstractResponse;
-        this.responseCallback = responseCallback;
+    private static final Recycler<ResponseCallbackWrapper> RECYCLER = new Recycler<ResponseCallbackWrapper>() {
+        @Override
+        protected ResponseCallbackWrapper newObject(Handle<ResponseCallbackWrapper> handle) {
+            return new ResponseCallbackWrapper(handle);
+        }
+    };
+
+    private ResponseCallbackWrapper(Handle<ResponseCallbackWrapper> recyclerHandle) {
+        this.recyclerHandle = recyclerHandle;
+    }
+
+    public static ResponseCallbackWrapper get(AbstractResponse abstractResponse, ResponseCallback responseCallback) {
+        ResponseCallbackWrapper responseCallbackWrapper = RECYCLER.get();
+        responseCallbackWrapper.abstractResponse = abstractResponse;
+        responseCallbackWrapper.responseCallback = responseCallback;
+        return responseCallbackWrapper;
     }
 
     @Override
@@ -43,5 +59,12 @@ public class ResponseCallbackWrapper extends AbstractResponse {
 
     public void responseComplete() {
         responseCallback.responseComplete();
+        recycle();
+    }
+
+    private void recycle() {
+        abstractResponse = null;
+        responseCallback = null;
+        recyclerHandle.recycle(this);
     }
 }

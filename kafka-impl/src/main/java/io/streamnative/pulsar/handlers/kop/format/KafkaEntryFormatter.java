@@ -66,7 +66,7 @@ public class KafkaEntryFormatter implements EntryFormatter {
 
         // release entries
         entries.forEach(Entry::release);
-        return new DecodeResult(
+        return DecodeResult.get(
                 MemoryRecords.readableRecords(ByteBufUtils.getNioBuffer(batchedByteBuf)), batchedByteBuf);
     }
 

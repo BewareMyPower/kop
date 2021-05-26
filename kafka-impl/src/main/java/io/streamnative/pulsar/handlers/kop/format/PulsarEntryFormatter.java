@@ -228,7 +228,7 @@ public class PulsarEntryFormatter implements EntryFormatter {
         });
 
         byteBuffer.flip();
-        return new DecodeResult(MemoryRecords.readableRecords(byteBuffer));
+        return DecodeResult.get(MemoryRecords.readableRecords(byteBuffer), null);
     }
 
     // convert kafka Record to Pulsar Message.
