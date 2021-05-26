@@ -37,6 +37,7 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.bookkeeper.common.util.MathUtils;
 import org.apache.bookkeeper.mledger.AsyncCallbacks.MarkDeleteCallback;
@@ -70,7 +71,6 @@ public final class MessageFetchContext {
 
     private final Handle<MessageFetchContext> recyclerHandle;
     private Map<TopicPartition, PartitionData<MemoryRecords>> responseData;
-    private Map<TopicPartition, Pair<ManagedCursor, Long>> cursors;
     private List<DecodeResult> decodeResults;
     private KafkaRequestHandler requestHandler;
     private int maxReadEntriesNum;
@@ -88,7 +88,6 @@ public final class MessageFetchContext {
                                           CompletableFuture<AbstractResponse> resultFuture) {
         MessageFetchContext context = RECYCLER.get();
         context.responseData = new ConcurrentHashMap<>();
-        context.cursors = new ConcurrentHashMap<>();
         context.decodeResults = new ArrayList<>();
         context.requestHandler = requestHandler;
         context.maxReadEntriesNum = requestHandler.getMaxReadEntriesNum();
@@ -114,7 +113,6 @@ public final class MessageFetchContext {
 
     private void recycle() {
         responseData = null;
-        cursors = null;
         decodeResults = null;
         requestHandler = null;
         maxReadEntriesNum = 0;
@@ -231,15 +229,15 @@ public final class MessageFetchContext {
                     return;
                 }
 
-                cursors.put(topicPartition, cursorLongPair);
+                final ManagedCursor cursor = cursorLongPair.getLeft();
+                final AtomicLong cursorOffset = new AtomicLong(cursorLongPair.getRight());
                 final long highWatermark = MessageIdUtils.getHighWatermark(
                         cursorLongPair.getLeft().getManagedLedger());
                 statsLogger.getPrepareMetadataStats().registerSuccessfulEvent(
                         MathUtils.elapsedNanos(startPrepareMetadataNanos), TimeUnit.NANOSECONDS);
-                readEntries(topicPartition).whenComplete((entries, throwable) -> {
+                readEntries(cursor, topicPartition, cursorOffset).whenComplete((entries, throwable) -> {
                     if (throwable != null) {
                         tcm.deleteOneCursorAsync(cursorLongPair.getLeft(), "cursor.readEntry fail. deleteCursor");
-                        cursors.remove(topicPartition);
                         addErrorPartitionResponse(topicPartition, Errors.forException(throwable));
                         return;
                     }
@@ -250,10 +248,7 @@ public final class MessageFetchContext {
                     }
 
                     // Add new offset back to TCM after entries are read successfully
-                    final Pair<ManagedCursor, Long> currentCursorLongPair = cursors.get(topicPartition);
-                    if (currentCursorLongPair != null) {
-                        tcm.add(currentCursorLongPair.getRight(), currentCursorLongPair);
-                    }
+                    tcm.add(cursorOffset.get(), Pair.of(cursor, cursorOffset.get()));
 
                     final long lso = (readCommitted
                             ? tc.getLastStableOffset(TopicName.get(fullTopicName), highWatermark)
@@ -326,56 +321,49 @@ public final class MessageFetchContext {
         });
     }
 
-    private CompletableFuture<List<Entry>> readEntries(final TopicPartition topicPartition) {
+    private CompletableFuture<List<Entry>> readEntries(final ManagedCursor cursor,
+                                                       final TopicPartition topicPartition,
+                                                       final AtomicLong cursorOffset) {
         final OpStatsLogger messageReadStats = statsLogger.getMessageReadStats();
         // read readeEntryNum size entry.
         final long startReadingMessagesNanos = MathUtils.nowInNano();
-        final Pair<ManagedCursor, Long> cursorLongPair = cursors.get(topicPartition);
-        if (cursorLongPair == null) {
-            log.error("Unexpected error when readEntries, cursor of {} doesn't exist", topicPartition);
-            messageReadStats.registerSuccessfulEvent(
-                    MathUtils.elapsedNanos(startReadingMessagesNanos), TimeUnit.NANOSECONDS);
-            return CompletableFuture.completedFuture(null);
-        }
 
         final CompletableFuture<List<Entry>> readFuture = new CompletableFuture<>();
-        final ManagedCursor cursor = cursorLongPair.getLeft();
-        final long currentOffset = cursorLongPair.getRight();
+        final long originalOffset = cursorOffset.get();
         cursor.asyncReadEntries(maxReadEntriesNum, new ReadEntriesCallback() {
 
             @Override
             public void readEntriesComplete(List<Entry> entries, Object ctx) {
-                for (Entry entry : entries) {
-                    final PositionImpl currentPosition = PositionImpl
-                            .get(entry.getLedgerId(), entry.getEntryId());
-                    try {
-                        final long offset = MessageIdUtils.peekOffsetFromEntry(entry);
+                if (entries.isEmpty()) {
+                    return;
+                }
+                final Entry lastEntry = entries.get(entries.size() - 1);
+                final PositionImpl currentPosition = PositionImpl.get(lastEntry.getLedgerId(), lastEntry.getEntryId());
 
-                        // commit the offset, so backlog not affect by this cursor.
-                        commitOffset((NonDurableCursorImpl) cursor, currentPosition);
+                try {
+                    final long lastOffset = MessageIdUtils.peekOffsetFromEntry(lastEntry);
 
-                        long nextOffset = offset + 1;
+                    // commit the offset, so backlog not affect by this cursor.
+                    commitOffset((NonDurableCursorImpl) cursor, currentPosition);
 
-                        // put next offset in to passed in cursors map.
-                        // and add back to TCM when all read complete.
-                        cursors.put(topicPartition, Pair.of(cursor, nextOffset));
+                    // and add back to TCM when all read complete.
+                    cursorOffset.set(lastOffset + 1);
 
-                        if (log.isDebugEnabled()) {
-                            log.debug("Topic {} success read entry: ledgerId: {}, entryId: {}, size: {},"
-                                            + " ConsumerManager original offset: {}, entryOffset: {} - {}, "
-                                            + "nextOffset: {}",
-                                    topicPartition, entry.getLedgerId(), entry.getEntryId(),
-                                    entry.getLength(), currentOffset, offset, currentPosition,
-                                    nextOffset);
-                        }
-                    } catch (Exception e) {
-                        log.error("[{}] Failed to peekOffsetFromEntry from position {}",
-                                topicPartition, currentPosition);
-                        messageReadStats.registerSuccessfulEvent(
-                                MathUtils.elapsedNanos(startReadingMessagesNanos), TimeUnit.NANOSECONDS);
-                        readFuture.completeExceptionally(e);
-                        return;
+                    if (log.isDebugEnabled()) {
+                        log.debug("Topic {} success read entry: ledgerId: {}, entryId: {}, size: {},"
+                                        + " ConsumerManager original offset: {}, lastEntryPosition: {}, "
+                                        + "nextOffset: {}",
+                                topicPartition, lastEntry.getLedgerId(), lastEntry.getEntryId(),
+                                lastEntry.getLength(), originalOffset, currentPosition,
+                                cursorOffset.get());
                     }
+                } catch (Exception e) {
+                    log.error("[{}] Failed to peekOffsetFromEntry from position {}",
+                            topicPartition, currentPosition);
+                    messageReadStats.registerFailedEvent(
+                            MathUtils.elapsedNanos(startReadingMessagesNanos), TimeUnit.NANOSECONDS);
+                    readFuture.completeExceptionally(e);
+                    return;
                 }
 
                 messageReadStats.registerSuccessfulEvent(
