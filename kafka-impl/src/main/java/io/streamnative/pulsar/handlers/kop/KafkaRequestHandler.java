@@ -31,7 +31,6 @@ import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelHandlerContext;
 import io.streamnative.pulsar.handlers.kop.coordinator.group.GroupCoordinator;
 import io.streamnative.pulsar.handlers.kop.coordinator.group.GroupMetadata.GroupOverview;
-import io.streamnative.pulsar.handlers.kop.coordinator.transaction.AbortedIndexEntry;
 import io.streamnative.pulsar.handlers.kop.coordinator.transaction.TransactionCoordinator;
 import io.streamnative.pulsar.handlers.kop.exceptions.KoPTopicException;
 import io.streamnative.pulsar.handlers.kop.format.EntryFormatter;
@@ -46,6 +45,7 @@ import io.streamnative.pulsar.handlers.kop.security.auth.ResourceType;
 import io.streamnative.pulsar.handlers.kop.security.auth.SimpleAclAuthorizer;
 import io.streamnative.pulsar.handlers.kop.stats.StatsLogger;
 import io.streamnative.pulsar.handlers.kop.storage.AppendRecordsContext;
+import io.streamnative.pulsar.handlers.kop.storage.PartitionLog;
 import io.streamnative.pulsar.handlers.kop.storage.ReplicaManager;
 import io.streamnative.pulsar.handlers.kop.utils.CoreUtils;
 import io.streamnative.pulsar.handlers.kop.utils.GroupIdUtils;
@@ -921,6 +921,7 @@ public class KafkaRequestHandler extends KafkaCommandDecoder {
                         produceHar.getRequest().version(),
                         namespacePrefix,
                         authorizedRequestInfo,
+                        PartitionLog.AppendOrigin.Client,
                         appendRecordsContext
                 ).whenComplete((response, ex) -> {
                     appendRecordsContext.recycle();
@@ -2132,92 +2133,107 @@ public class KafkaRequestHandler extends KafkaCommandDecoder {
                 request.command(),
                 errors -> response.complete(new EndTxnResponse(0, errors)));
     }
-
     @Override
     protected void handleWriteTxnMarkers(KafkaHeaderAndRequest kafkaHeaderAndRequest,
                                          CompletableFuture<AbstractResponse> response) {
         WriteTxnMarkersRequest request = (WriteTxnMarkersRequest) kafkaHeaderAndRequest.getRequest();
-        Map<Long, Map<TopicPartition, Errors>> resultMap = new ConcurrentHashMap<>();
-        List<CompletableFuture<Void>> resultFutureList = new ArrayList<>();
-        TransactionCoordinator transactionCoordinator = getTransactionCoordinator();
-        String namespacePrefix = currentNamespacePrefix();
-        for (WriteTxnMarkersRequest.TxnMarkerEntry txnMarkerEntry : request.markers()) {
-            Map<TopicPartition, Errors> partitionErrorsMap =
-                    resultMap.computeIfAbsent(txnMarkerEntry.producerId(), pid -> new HashMap<>());
+        Map<Long, Map<TopicPartition, Errors>> errors = new ConcurrentHashMap<>();
+        List<WriteTxnMarkersRequest.TxnMarkerEntry> markers = request.markers();
+        AtomicInteger numAppends = new AtomicInteger(markers.size());
 
-            for (TopicPartition topicPartition : txnMarkerEntry.partitions()) {
-                CompletableFuture<Void> resultFuture = new CompletableFuture<>();
-                CompletableFuture<Long> completableFuture = writeTxnMarker(
-                        topicPartition,
-                        txnMarkerEntry.transactionResult(),
-                        txnMarkerEntry.producerId(),
-                        txnMarkerEntry.producerEpoch());
-                completableFuture.whenComplete((offset, throwable) -> {
-                    if (throwable != null) {
-                        log.error("Failed to write txn marker for partition {}", topicPartition, throwable);
-                        partitionErrorsMap.put(topicPartition, Errors.KAFKA_STORAGE_ERROR);
-                        resultFuture.complete(null);
-                        return;
-                    }
-                    if (offset == null) {
-                        // this case happens when the broker receives a request for
-                        // a topic that is being unloaded
-                        log.error("Failed to write txn marker for partition {} no offset (topic not owned) "
-                                        + "- send LEADER_NOT_AVAILABLE", topicPartition);
-                        partitionErrorsMap.put(topicPartition, Errors.LEADER_NOT_AVAILABLE);
-                        resultFuture.complete(null);
-                        return;
-                    }
-
-                    CompletableFuture<Void> handleGroupFuture;
-                    if (TopicName.get(topicPartition.topic()).getLocalName().equals(GROUP_METADATA_TOPIC_NAME)) {
-                        handleGroupFuture = getGroupCoordinator().scheduleHandleTxnCompletion(
-                                txnMarkerEntry.producerId(),
-                                Collections.singleton(topicPartition.partition()),
-                                txnMarkerEntry.transactionResult());
-                    } else {
-                        handleGroupFuture = CompletableFuture.completedFuture(null);
-                    }
-
-                    handleGroupFuture.whenComplete((ignored, handleGroupThrowable) -> {
-                        if (handleGroupThrowable != null) {
-                            log.error("Failed to handle group end txn for partition {}",
-                                    topicPartition, handleGroupThrowable);
-                            partitionErrorsMap.put(topicPartition, Errors.forException(handleGroupThrowable));
-                            resultFuture.complete(null);
-                            return;
-                        }
-                        String fullPartitionName = KopTopic.toString(topicPartition, namespacePrefix);
-                        TopicName topicName = TopicName.get(fullPartitionName);
-
-                        long firstOffset = transactionCoordinator.removeActivePidOffset(
-                                topicName, txnMarkerEntry.producerId());
-                        long lastStableOffset = transactionCoordinator.getLastStableOffset(topicName, offset);
-
-                        if (txnMarkerEntry.transactionResult().equals(TransactionResult.ABORT)) {
-                            transactionCoordinator.addAbortedIndex(AbortedIndexEntry.builder()
-                                    .version(request.version())
-                                    .pid(txnMarkerEntry.producerId())
-                                    .firstOffset(firstOffset)
-                                    .lastOffset(offset)
-                                    .lastStableOffset(lastStableOffset)
-                                    .build());
-                        }
-                        partitionErrorsMap.put(topicPartition, Errors.NONE);
-                        resultFuture.complete(null);
-                    });
-                });
-                resultFutureList.add(resultFuture);
-            }
+        if (numAppends.get() == 0) {
+            response.complete(new WriteTxnMarkersResponse(errors));
+            return;
         }
-        FutureUtil.waitForAll(resultFutureList).whenComplete((ignored, throwable) -> {
-            if (throwable != null) {
-                log.error("Write txn mark fail with internal error!", throwable);
-                response.complete(request.getErrorResponse(throwable));
-                return;
+        BiConsumer<Long, Map<TopicPartition, Errors>> updateErrors = (producerId, currentErrors) -> {
+            Map<TopicPartition, Errors> previousErrors = errors.putIfAbsent(producerId, currentErrors);
+            if (previousErrors != null) {
+                previousErrors.putAll(currentErrors);
             }
-            response.complete(new WriteTxnMarkersResponse(resultMap));
-        });
+        };
+        Runnable completeOne = () -> {
+          if (numAppends.decrementAndGet() == 0) {
+              response.complete(new WriteTxnMarkersResponse(errors));
+          }
+        };
+
+        for (WriteTxnMarkersRequest.TxnMarkerEntry marker : markers) {
+            long producerId = marker.producerId();
+            TransactionResult transactionResult = marker.transactionResult();
+            Map<TopicPartition, MemoryRecords> controlRecords = generateTxnMarkerRecords(marker);
+            AppendRecordsContext appendRecordsContext = AppendRecordsContext.get(
+                    topicManager,
+                    requestStats,
+                    this::startSendOperationForThrottling,
+                    this::completeSendOperationForThrottling,
+                    this.pendingTopicFuturesMap);
+            getReplicaManager().appendRecords(
+                    kafkaConfig.getRequestTimeoutMs(),
+                    true,
+                    request.version(),
+                    currentNamespacePrefix(),
+                    controlRecords,
+                    PartitionLog.AppendOrigin.Coordinator,
+                    appendRecordsContext
+            ).whenComplete((result, ex) -> {
+                appendRecordsContext.recycle();
+                if (ex != null) {
+                    log.error("Append txn marker failed.", ex);
+                    Map<TopicPartition, Errors> currentErrors = new HashMap<>();
+                    controlRecords.forEach(((topicPartition, partitionResponse) -> {
+                        currentErrors.put(topicPartition, Errors.KAFKA_STORAGE_ERROR);
+                    }));
+                    updateErrors.accept(producerId, currentErrors);
+                    completeOne.run();
+                    return;
+                }
+                Map<TopicPartition, Errors> currentErrors = new HashMap<>();
+                result.forEach(((topicPartition, partitionResponse) -> {
+                    currentErrors.put(topicPartition, partitionResponse.error);
+                }));
+                updateErrors.accept(producerId, currentErrors);
+
+                Set<TopicPartition> successfulOffsetsPartitions = result.keySet()
+                        .stream()
+                        .filter(topicPartition ->
+                                TopicName.get(topicPartition.topic()).getLocalName().equals(GROUP_METADATA_TOPIC_NAME))
+                        .collect(Collectors.toSet());
+                if (successfulOffsetsPartitions.size() > 0) {
+                    getGroupCoordinator().scheduleHandleTxnCompletion(
+                            producerId,
+                            successfulOffsetsPartitions
+                                    .stream().map(TopicPartition::partition).collect(Collectors.toSet()),
+                            transactionResult).whenComplete((__, e) -> {
+                                if (e != null) {
+                                    log.error("Received an exception while trying to update the offsets cache on "
+                                            + "transaction marker append", e);
+                                    ConcurrentHashMap<TopicPartition, Errors> updatedErrors = new ConcurrentHashMap<>();
+                                    successfulOffsetsPartitions.forEach(partition ->
+                                            updatedErrors.put(partition, Errors.forException(e.getCause())));
+                                    updateErrors.accept(producerId, updatedErrors);
+                                }
+                        completeOne.run();
+                    });
+                    return;
+                }
+                completeOne.run();
+            });
+        }
+    }
+
+    private Map<TopicPartition, MemoryRecords> generateTxnMarkerRecords(WriteTxnMarkersRequest.TxnMarkerEntry marker) {
+        Map<TopicPartition, MemoryRecords> txnMarkerRecordsMap = Maps.newHashMap();
+
+        ControlRecordType controlRecordType = marker.transactionResult().equals(TransactionResult.COMMIT)
+                ? ControlRecordType.COMMIT : ControlRecordType.ABORT;
+        EndTransactionMarker endTransactionMarker = new EndTransactionMarker(
+                controlRecordType, marker.coordinatorEpoch());
+        for (TopicPartition topicPartition : marker.partitions()) {
+            MemoryRecords memoryRecords = MemoryRecords.withEndTransactionMarker(
+                    marker.producerId(), marker.producerEpoch(), endTransactionMarker);
+            txnMarkerRecordsMap.put(topicPartition, memoryRecords);
+        }
+        return txnMarkerRecordsMap;
     }
 
     @Override

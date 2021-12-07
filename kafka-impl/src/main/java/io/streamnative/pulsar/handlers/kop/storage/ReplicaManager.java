@@ -15,15 +15,14 @@ package io.streamnative.pulsar.handlers.kop.storage;
 
 import io.streamnative.pulsar.handlers.kop.DelayedProduceAndFetch;
 import io.streamnative.pulsar.handlers.kop.KafkaServiceConfiguration;
-import io.streamnative.pulsar.handlers.kop.coordinator.transaction.TransactionCoordinator;
 import io.streamnative.pulsar.handlers.kop.format.EntryFormatter;
+import io.streamnative.pulsar.handlers.kop.systopic.SystemTopicClientFactory;
 import io.streamnative.pulsar.handlers.kop.utils.KopTopic;
 import io.streamnative.pulsar.handlers.kop.utils.delayed.DelayedOperation;
 import io.streamnative.pulsar.handlers.kop.utils.delayed.DelayedOperationKey;
 import io.streamnative.pulsar.handlers.kop.utils.delayed.DelayedOperationPurgatory;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -48,9 +47,9 @@ public class ReplicaManager {
     public ReplicaManager(KafkaServiceConfiguration kafkaConfig,
                           Time time,
                           EntryFormatter entryFormatter,
-                          Optional<TransactionCoordinator> transactionCoordinator,
+                          SystemTopicClientFactory systemTopicClientFactory,
                           DelayedOperationPurgatory<DelayedOperation> producePurgatory) {
-        this.logManager = new PartitionLogManager(kafkaConfig, entryFormatter, transactionCoordinator, time);
+        this.logManager = new PartitionLogManager(kafkaConfig, entryFormatter, systemTopicClientFactory, time);
         this.producePurgatory = producePurgatory;
     }
 
@@ -64,6 +63,7 @@ public class ReplicaManager {
             final short version,
             final String namespacePrefix,
             final Map<TopicPartition, MemoryRecords> entriesPerPartition,
+            final PartitionLog.AppendOrigin origin,
             final AppendRecordsContext appendRecordsContext) {
         CompletableFuture<Map<TopicPartition, ProduceResponse.PartitionResponse>> completableFuture =
                 new CompletableFuture<>();
@@ -108,7 +108,7 @@ public class ReplicaManager {
                                 String.format("Cannot append to internal topic %s", topicPartition.topic())))));
             } else {
                 PartitionLog partitionLog = getPartitionLog(topicPartition, namespacePrefix);
-                partitionLog.appendRecords(memoryRecords, version, appendRecordsContext)
+                partitionLog.appendRecords(memoryRecords, origin, version, appendRecordsContext)
                         .thenAccept(offset -> addPartitionResponse.accept(topicPartition,
                                 new ProduceResponse.PartitionResponse(Errors.NONE, offset, -1L, -1L)))
                         .exceptionally(ex -> {
