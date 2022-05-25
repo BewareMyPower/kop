@@ -86,6 +86,7 @@
     <module>kafka-payload-processor-shaded-tests</module>
     <module>test-listener</module>
     <module>serializers</module>
+    <module>serializers-common</module>
   </modules>
 
   <!-- dependency definitions -->

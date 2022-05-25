@@ -30,6 +30,11 @@
 
   <dependencies>
     <dependency>
+      <groupId>io.streamnative.pulsar.handlers</groupId>
+      <artifactId>serializers-common</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
       <groupId>org.apache.kafka</groupId>
       <artifactId>kafka-clients</artifactId>
       <scope>provided</scope>
@@ -38,7 +43,7 @@
     <dependency>
       <groupId>org.apache.avro</groupId>
       <artifactId>avro</artifactId>
-      <version>1.10.2</version>
+      <version>1.11.0</version>
     </dependency>
   </dependencies>
 
