@@ -22,6 +22,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
+import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.handler.codec.http.DefaultFullHttpResponse;
 import io.netty.handler.codec.http.FullHttpRequest;
@@ -30,10 +31,13 @@ import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.util.CharsetUtil;
 import io.streamnative.pulsar.handlers.kop.schemaregistry.model.impl.SchemaStorageException;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import lombok.AllArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 
+@Slf4j
 public abstract class HttpRequestProcessor implements AutoCloseable {
 
     protected static final ObjectMapper MAPPER = new ObjectMapper()
@@ -56,11 +60,18 @@ public abstract class HttpRequestProcessor implements AutoCloseable {
         return httpResponse;
     }
 
-    public static FullHttpResponse buildErrorResponse(HttpResponseStatus error, String body, String contentType) {
-        FullHttpResponse httpResponse = new DefaultFullHttpResponse(HTTP_1_1, error,
-                Unpooled.copiedBuffer(body, CharsetUtil.UTF_8));
-        httpResponse.headers().set(HttpHeaderNames.CONTENT_TYPE, contentType);
-        httpResponse.headers().set(HttpHeaderNames.CONTENT_LENGTH, body.length());
+    public static FullHttpResponse buildErrorResponse(HttpResponseStatus error, String message) {
+        byte[] bytes = null;
+        try {
+            bytes = MAPPER.writeValueAsBytes(new ErrorMessage(error.code(), message));
+        } catch (JsonProcessingException e) {
+            log.error("Failed to write ErrorMessage({}, {})", error.code(), message, e);
+        }
+        final ByteBuf buf = Unpooled.wrappedBuffer((bytes != null) ? bytes : "{}".getBytes(StandardCharsets.UTF_8));
+
+        FullHttpResponse httpResponse = new DefaultFullHttpResponse(HTTP_1_1, error, buf);
+        httpResponse.headers().set(HttpHeaderNames.CONTENT_TYPE, "application/json");
+        httpResponse.headers().set(HttpHeaderNames.CONTENT_LENGTH, buf.readableBytes());
         addCORSHeaders(httpResponse);
         return httpResponse;
     }
@@ -111,7 +122,7 @@ public abstract class HttpRequestProcessor implements AutoCloseable {
             return buildStringResponse(body, contentType);
         } catch (JsonProcessingException err) {
             return buildErrorResponse(INTERNAL_SERVER_ERROR,
-                    "Internal server error - JSON Processing", "text/plain");
+                    "Build JSON response failed: " + err.getMessage());
         }
     }
 
