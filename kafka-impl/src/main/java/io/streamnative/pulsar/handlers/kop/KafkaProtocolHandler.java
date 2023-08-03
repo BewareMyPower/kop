@@ -127,6 +127,10 @@ public class KafkaProtocolHandler implements ProtocolHandler, TenantContextManag
     @Getter
     private OrderedExecutor recoveryExecutor;
 
+    // This thread pool maintains threads for I/O operations. It does not use Netty threads because some blocking
+    // operations might be executed in these threads.
+    private final SingleThreadExecutorPool ioExecutorPool = new SingleThreadExecutorPool("kop-io");
+
     @Override
     public GroupCoordinator getGroupCoordinator(String tenant) {
         return groupCoordinatorsByTenant.computeIfAbsent(tenant, this::createAndBootGroupCoordinator);
@@ -463,7 +467,8 @@ public class KafkaProtocolHandler implements ProtocolHandler, TenantContextManag
                 sendResponseScheduler,
                 kafkaTopicManagerSharedState,
                 kafkaTopicLookupService,
-                lookupClient);
+                lookupClient,
+                ioExecutorPool);
     }
 
     class ProducerStateManagerSnapshotProvider implements Function<String, ProducerStateManagerSnapshotBuffer> {
@@ -537,6 +542,7 @@ public class KafkaProtocolHandler implements ProtocolHandler, TenantContextManag
 
     @Override
     public void close() {
+        ioExecutorPool.close();
         if (txUpdatedPurgeAbortedTxOffsetsTimeHandle != null) {
             txUpdatedPurgeAbortedTxOffsetsTimeHandle.cancel(false);
         }

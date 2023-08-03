@@ -28,6 +28,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiConsumer;
@@ -138,7 +139,8 @@ public class ReplicaManager {
             final String namespacePrefix,
             final Map<TopicPartition, MemoryRecords> entriesPerPartition,
             final PartitionLog.AppendOrigin origin,
-            final AppendRecordsContext appendRecordsContext) {
+            final AppendRecordsContext appendRecordsContext,
+            final ExecutorService ioExecutor) {
         CompletableFuture<Map<TopicPartition, ProduceResponse.PartitionResponse>> completableFuture =
                 new CompletableFuture<>();
         try {
@@ -169,7 +171,9 @@ public class ReplicaManager {
                     addPartitionResponse.accept(topicPartition, new ProduceResponse.PartitionResponse(
                             Errors.forException(new InvalidTopicException(
                                     String.format("Cannot append to internal topic %s", topicPartition.topic())))));
-                } else {
+                    return;
+                }
+                ioExecutor.execute(() -> {
                     PartitionLog partitionLog = getPartitionLog(topicPartition, namespacePrefix);
                     if (requiredAcks == 0) {
                         partitionLog.appendRecords(memoryRecords, origin, appendRecordsContext);
@@ -209,7 +213,7 @@ public class ReplicaManager {
                                 }
                                 return null;
                             });
-                }
+                });
             });
             // delay produce
             if (timeout <= 0) {

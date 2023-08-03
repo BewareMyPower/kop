@@ -68,6 +68,7 @@ public class KafkaChannelInitializer extends ChannelInitializer<SocketChannel> {
     private final OrderedScheduler sendResponseScheduler;
 
     private final LengthFieldPrepender lengthFieldPrepender;
+    private final SingleThreadExecutorPool ioExecutorPool;
 
     public KafkaChannelInitializer(PulsarService pulsarService,
                                    KafkaServiceConfiguration kafkaConfig,
@@ -84,7 +85,8 @@ public class KafkaChannelInitializer extends ChannelInitializer<SocketChannel> {
                                    OrderedScheduler sendResponseScheduler,
                                    KafkaTopicManagerSharedState kafkaTopicManagerSharedState,
                                    KafkaTopicLookupService kafkaTopicLookupService,
-                                   LookupClient lookupClient) {
+                                   LookupClient lookupClient,
+                                   SingleThreadExecutorPool ioExecutorPool) {
         super();
         this.pulsarService = pulsarService;
         this.kafkaConfig = kafkaConfig;
@@ -108,6 +110,7 @@ public class KafkaChannelInitializer extends ChannelInitializer<SocketChannel> {
         this.kafkaTopicManagerSharedState = kafkaTopicManagerSharedState;
         this.lengthFieldPrepender = new LengthFieldPrepender(4);
         this.kafkaTopicLookupService = kafkaTopicLookupService;
+        this.ioExecutorPool = ioExecutorPool;
     }
 
     @Override
@@ -133,7 +136,7 @@ public class KafkaChannelInitializer extends ChannelInitializer<SocketChannel> {
                 tenantContextManager, replicaManager, kopBrokerLookupManager, adminManager,
                 producePurgatory, fetchPurgatory,
                 enableTls, advertisedEndPoint, skipMessagesWithoutIndex, requestStats, sendResponseScheduler,
-                kafkaTopicManagerSharedState, kafkaTopicLookupService, lookupClient);
+                kafkaTopicManagerSharedState, kafkaTopicLookupService, lookupClient, ioExecutorPool.next());
     }
 
     @VisibleForTesting
@@ -144,6 +147,6 @@ public class KafkaChannelInitializer extends ChannelInitializer<SocketChannel> {
                 enableTls, advertisedEndPoint, skipMessagesWithoutIndex,
                 requestStats,
                 sendResponseScheduler,
-                kafkaTopicManagerSharedState, kafkaTopicLookupService, lookupClient);
+                kafkaTopicManagerSharedState, kafkaTopicLookupService, lookupClient, ioExecutorPool.next());
     }
 }

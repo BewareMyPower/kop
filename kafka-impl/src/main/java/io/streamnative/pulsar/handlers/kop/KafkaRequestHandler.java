@@ -69,6 +69,7 @@ import java.util.concurrent.ConcurrentSkipListSet;
 import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -256,6 +257,7 @@ public class KafkaRequestHandler extends KafkaCommandDecoder {
     private final long resumeThresholdPendingBytes;
     private final AtomicLong pendingBytes = new AtomicLong(0);
     private volatile boolean autoReadDisabledPublishBufferLimiting = false;
+    private final ExecutorService ioExecutor;
 
     private String getCurrentTenant() {
         return getCurrentTenant(kafkaConfig.getKafkaMetadataTenant());
@@ -323,7 +325,8 @@ public class KafkaRequestHandler extends KafkaCommandDecoder {
                                OrderedScheduler sendResponseScheduler,
                                KafkaTopicManagerSharedState kafkaTopicManagerSharedState,
                                KafkaTopicLookupService kafkaTopicLookupService,
-                               LookupClient lookupClient) throws Exception {
+                               LookupClient lookupClient,
+                               ExecutorService ioExecutor) throws Exception {
         super(requestStats, kafkaConfig, sendResponseScheduler);
         this.pulsarService = pulsarService;
         this.tenantContextManager = tenantContextManager;
@@ -359,6 +362,7 @@ public class KafkaRequestHandler extends KafkaCommandDecoder {
         this.resumeThresholdPendingBytes = this.maxPendingBytes / 2;
         this.failedAuthenticationDelayMs = kafkaConfig.getFailedAuthenticationDelayMs();
         this.kafkaTopicManagerSharedState = kafkaTopicManagerSharedState;
+        this.ioExecutor = ioExecutor;
 
         // update alive channel count stats
         RequestStats.ALIVE_CHANNEL_COUNT_INSTANCE.incrementAndGet();
@@ -866,7 +870,6 @@ public class KafkaRequestHandler extends KafkaCommandDecoder {
                         this::completeSendOperationForThrottling,
                         pendingTopicFuturesMap,
                         ctx);
-                ReplicaManager replicaManager = getReplicaManager();
                 replicaManager.appendRecords(
                         timeoutMs,
                         requiredAcks,
@@ -874,7 +877,8 @@ public class KafkaRequestHandler extends KafkaCommandDecoder {
                         namespacePrefix,
                         authorizedRequestInfo,
                         PartitionLog.AppendOrigin.Client,
-                        appendRecordsContext
+                        appendRecordsContext,
+                        ioExecutor
                 ).whenComplete((response, ex) -> {
                     if (ex != null) {
                         resultFuture.completeExceptionally(ex.getCause());
@@ -1679,7 +1683,7 @@ public class KafkaRequestHandler extends KafkaCommandDecoder {
                     MessageFetchContext context = MessageFetchContext
                             .get(this, transactionCoordinator, maxReadEntriesNum, namespacePrefix,
                                     getKafkaTopicManagerSharedState(), this.executor, fetch);
-                    this.getReplicaManager().fetchMessage(
+                    replicaManager.fetchMessage(
                             request.maxWait(),
                             fetchMinBytes,
                             fetchMaxBytes,
@@ -2440,14 +2444,15 @@ public class KafkaRequestHandler extends KafkaCommandDecoder {
                     this::completeSendOperationForThrottling,
                     this.pendingTopicFuturesMap,
                     ctx);
-            getReplicaManager().appendRecords(
+            replicaManager.appendRecords(
                     kafkaConfig.getRequestTimeoutMs(),
                     (short) 1,
                     true,
                     currentNamespacePrefix(),
                     controlRecords,
                     PartitionLog.AppendOrigin.Coordinator,
-                    appendRecordsContext
+                    appendRecordsContext,
+                    ioExecutor
             ).whenComplete((result, ex) -> {
                 if (ex != null) {
                     log.error("[{}] Append txn marker ({}) failed.", ctx.channel(), marker, ex);
