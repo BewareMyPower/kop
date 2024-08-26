@@ -152,7 +152,13 @@ public class KopBrokerLookupManager {
     }
 
     protected CompletableFuture<Boolean> internalCheckTopicExists(TopicName topicName) {
-        return this.pulsar.getNamespaceService().checkTopicExists(topicName);
+        return this.pulsar.getNamespaceService().checkTopicExists(topicName).thenApply(info -> {
+            try {
+                return info.isExists();
+            } finally {
+                info.recycle();
+            }
+        });
     }
 
 
